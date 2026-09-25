@@ -162,9 +162,24 @@ def _peticion(url: str) -> urllib.request.Request:
     return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
 
-def _leer_url(url: str, timeout: int = 45) -> bytes:
-    with urllib.request.urlopen(_peticion(url), timeout=timeout) as r:
-        return r.read()
+def _leer_url(url: str, timeout: int = 120, intentos: int = 4) -> bytes:
+    """Lee una URL con reintentos para conexiones lentas/inestables."""
+    ultimo_error: Exception | None = None
+    for intento in range(1, intentos + 1):
+        try:
+            with urllib.request.urlopen(_peticion(url), timeout=timeout) as r:
+                return r.read()
+        except Exception as e:
+            ultimo_error = e
+            if intento < intentos:
+                espera = min(3 * intento, 10)
+                log.warning(
+                    "Conexión lenta/fallida (%s/%s): %s. Reintento en %ss...",
+                    intento, intentos, e, espera,
+                )
+                time.sleep(espera)
+    assert ultimo_error is not None
+    raise ultimo_error
 
 
 def _sha256_archivo(ruta: Path) -> str:
@@ -176,30 +191,74 @@ def _sha256_archivo(ruta: Path) -> str:
 
 
 def _descargar(url: str, destino: Path, etiqueta: str, sha256: str | None = None) -> None:
+    """Descarga con reintentos; usa curl como respaldo en Linux si urllib falla."""
     destino.parent.mkdir(parents=True, exist_ok=True)
     temporal = destino.with_suffix(destino.suffix + ".part")
     temporal.unlink(missing_ok=True)
 
     log.info("Preparando %s...", etiqueta)
-    try:
-        with urllib.request.urlopen(_peticion(url), timeout=60) as r, temporal.open("wb") as f:
-            total = int(r.headers.get("Content-Length") or 0)
-            descargado = 0
-            ultimo_pct = -10
-            while True:
-                bloque = r.read(1024 * 1024)
-                if not bloque:
-                    break
-                f.write(bloque)
-                descargado += len(bloque)
-                if total:
-                    pct = int(descargado * 100 / total)
-                    if pct >= ultimo_pct + 10:
-                        ultimo_pct = pct
-                        log.info("   %s: %s%%", etiqueta, min(100, pct))
-    except Exception:
+    ultimo_error: Exception | None = None
+
+    for intento in range(1, 5):
+        try:
+            temporal.unlink(missing_ok=True)
+            with urllib.request.urlopen(_peticion(url), timeout=180) as r, temporal.open("wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                descargado = 0
+                ultimo_pct = -10
+                while True:
+                    bloque = r.read(1024 * 1024)
+                    if not bloque:
+                        break
+                    f.write(bloque)
+                    descargado += len(bloque)
+                    if total:
+                        pct = int(descargado * 100 / total)
+                        if pct >= ultimo_pct + 10:
+                            ultimo_pct = pct
+                            log.info("   %s: %s%%", etiqueta, min(100, pct))
+            ultimo_error = None
+            break
+        except Exception as e:
+            ultimo_error = e
+            temporal.unlink(missing_ok=True)
+            if intento < 4:
+                espera = min(4 * intento, 15)
+                log.warning(
+                    "Descarga de %s falló (%s/4): %s. Reintento en %ss...",
+                    etiqueta, intento, e, espera,
+                )
+                time.sleep(espera)
+
+    if ultimo_error is not None and SISTEMA == "Linux":
+        curl = shutil.which("curl")
+        if curl:
+            log.warning("urllib no pudo descargar %s; pruebo con curl...", etiqueta)
+            temporal.unlink(missing_ok=True)
+            cmd = [
+                curl, "-L", "--fail", "--silent", "--show-error",
+                "--connect-timeout", "30",
+                "--max-time", "900",
+                "--retry", "4",
+                "--retry-delay", "3",
+                "-o", str(temporal),
+                url,
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                ultimo_error = None
+            except Exception as e:
+                ultimo_error = e
+                temporal.unlink(missing_ok=True)
+
+    if ultimo_error is not None:
+        raise RuntimeError(
+            f"No se pudo descargar {etiqueta} tras varios intentos: {ultimo_error}"
+        ) from ultimo_error
+
+    if not temporal.exists() or temporal.stat().st_size == 0:
         temporal.unlink(missing_ok=True)
-        raise
+        raise RuntimeError(f"La descarga de {etiqueta} quedó vacía.")
 
     if sha256:
         real = _sha256_archivo(temporal)
