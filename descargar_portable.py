@@ -657,7 +657,7 @@ def _parsear_duracion(fila: dict) -> float | None:
         except ValueError:
             pass
 
-    texto = _valor(fila, "Duration")
+    texto = _valor(fila, "Duration", "Duración", "Duracion")
     if texto:
         try:
             partes = [float(x) for x in texto.split(":")]
@@ -675,12 +675,22 @@ def fila_a_cancion(fila: dict) -> Cancion | None:
     #   Track name, Artist name, Album, ISRC
     #   Track Name, Artist Name(s), Album Name
     #   Song, Artist, Album
-    titulo = _valor(fila, "Track Name", "Track name", "Song", "Title", "Track")
+    #   Canción, Artistas, Álbum, Duración
+    titulo = _valor(
+        fila,
+        "Track Name", "Track name", "Song", "Title", "Track",
+        "Canción", "Cancion"
+    )
     artista_raw = _valor(
         fila,
-        "Artist Name(s)", "Artist name", "Artist Name", "Artist", "Artists"
+        "Artist Name(s)", "Artist name", "Artist Name", "Artist", "Artists",
+        "Artistas", "Artista"
     )
-    album = _valor(fila, "Album Name", "Album name", "Album")
+    album = _valor(
+        fila,
+        "Album Name", "Album name", "Album",
+        "Álbum", "Album"
+    )
     isrc = _valor(fila, "ISRC")
 
     if not titulo:
